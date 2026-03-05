@@ -1,0 +1,1112 @@
+# Cours complet : MCP Servers avec FastMCP
+
+**Source :** [FastMCP Documentation](https://gofastmcp.com/)  
+**Niveau :** De débutant à expert · **Objectif :** Devenir expert en serveurs MCP avec le framework FastMCP.
+
+---
+
+## Table des matières
+
+1. [Introduction : MCP et FastMCP](#1-introduction-mcp-et-fastmcp)
+2. [Installation et premier serveur](#2-installation-et-premier-serveur)
+3. [Le serveur FastMCP (core)](#3-le-serveur-fastmcp-core)
+4. [Tools (outils)](#4-tools-outils)
+5. [Resources et templates](#5-resources-et-templates)
+6. [Prompts](#6-prompts)
+7. [Contexte MCP et injection de dépendances](#7-contexte-mcp-et-injection-de-dépendances)
+8. [Authentification](#8-authentification)
+9. [Middleware](#9-middleware)
+10. [Providers et composition](#10-providers-et-composition)
+11. [Transforms](#11-transforms)
+12. [Lifespan, progress, logging](#12-lifespan-progress-logging)
+13. [Background tasks](#13-background-tasks)
+14. [Client FastMCP](#14-client-fastmcp)
+15. [Déploiement (STDIO, HTTP, ASGI)](#15-déploiement)
+16. [CLI fastmcp](#16-cli-fastmcp)
+17. [Apps (UI dans la conversation)](#17-apps-ui-dans-la-conversation)
+18. [Exemples récapitulatifs](#18-exemples-récapitulatifs)
+19. [Exercices](#19-exercices)
+20. [Corrigé des exercices](#20-corrigé-des-exercices)
+
+---
+
+## 1. Introduction : MCP et FastMCP
+
+### 1.1 Qu’est-ce que le Model Context Protocol (MCP) ?
+
+Le **Model Context Protocol** ([modelcontextprotocol.io](https://modelcontextprotocol.io/)) est un protocole ouvert qui permet de connecter des LLM (modèles de langage) à des **outils** et des **données**. Les clients (Claude, Cursor, ChatGPT, etc.) appellent des serveurs MCP pour exécuter des actions ou lire des ressources.
+
+**Concepts clés :**
+- **Serveur MCP** : expose des **tools** (fonctions exécutables), des **resources** (données lisibles), et des **prompts** (templates de messages).
+- **Client MCP** : se connecte au serveur, liste les composants, appelle les tools, lit les resources, récupère les prompts.
+
+### 1.2 Pourquoi FastMCP ?
+
+**FastMCP** est le framework de référence pour construire des applications MCP en Python ([gofastmcp.com](https://gofastmcp.com/)).
+
+- **Schéma et validation** : une fonction Python décorée devient un outil MCP avec schéma JSON et doc générés automatiquement.
+- **Transports** : STDIO (local), HTTP (Streamable), SSE (legacy) ; négociation et cycle de vie gérés.
+- **Bonnes pratiques intégrées** : auth, pagination, middleware, tests.
+
+FastMCP 1.0 a été intégré au SDK Python officiel MCP ; la version standalone est très utilisée (ordre de grandeur : millions de téléchargements/jour, une large part des serveurs MCP).
+
+### 1.3 Les trois piliers FastMCP
+
+| Pilier | Rôle |
+|--------|------|
+| **Servers** | Exposent tools, resources et prompts aux LLM. |
+| **Clients** | Se connectent à n’importe quel serveur MCP (local, distant, CLI). |
+| **Apps** | Donnent à certains tools des UI interactives (rendues dans la conversation). |
+
+---
+
+## 2. Installation et premier serveur
+
+### 2.1 Installation
+
+Recommandation : utiliser [uv](https://docs.astral.sh/uv/) pour gérer l’environnement.
+
+```bash
+pip install fastmcp
+# ou
+uv add fastmcp
+```
+
+Vérification :
+
+```bash
+fastmcp version
+```
+
+Extras utiles (optionnels) :
+- `fastmcp[tasks]` : tâches en arrière-plan (Docket).
+- `fastmcp[apps]` : Prefab UI pour les apps.
+
+### 2.2 Premier serveur
+
+Créer un fichier `my_server.py` :
+
+```python
+from fastmcp import FastMCP
+
+mcp = FastMCP("My MCP Server")
+
+@mcp.tool
+def greet(name: str) -> str:
+    """Retourne un salut personnalisé."""
+    return f"Hello, {name}!"
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+Exécution : `python my_server.py` (transport STDIO par défaut).
+
+Avec HTTP (port 8000) :
+
+```python
+if __name__ == "__main__":
+    mcp.run(transport="http", port=8000)
+```
+
+Le client peut alors se connecter à `http://localhost:8000/mcp`.
+
+### 2.3 Lancer avec la CLI
+
+Sans modifier le code :
+
+```bash
+fastmcp run my_server.py:mcp
+fastmcp run my_server.py:mcp --transport http --port 8000
+```
+
+---
+
+## 3. Le serveur FastMCP (core)
+
+### 3.1 Création et paramètres principaux
+
+```python
+from fastmcp import FastMCP
+
+mcp = FastMCP(
+    name="MyAssistantServer",
+    instructions="Ce serveur fournit des outils d’analyse. Utilisez get_average() pour les données numériques.",
+    version="1.0.0",
+    url="https://example.com/docs",
+    # auth=..., lifespan=..., transforms=[...], strict_input_validation=..., list_page_size=...
+)
+```
+
+- **name** : identifiant lisible du serveur.
+- **instructions** : aide le client (et le LLM) à savoir comment utiliser le serveur.
+- **version** : chaîne de version (défaut : version de la lib FastMCP).
+- **auth** : fournisseur d’authentification (voir section 8).
+- **transforms** : liste de transforms appliqués à tous les composants.
+- **strict_input_validation** : validation stricte des entrées (JSON Schema exact).
+- **list_page_size** : pagination des listes (tools/list, resources/list, etc.).
+
+### 3.2 Les trois types de composants
+
+| Type | Rôle | Exemple |
+|------|------|--------|
+| **Tools** | Fonctions exécutables (actions, appels externes). | `@mcp.tool` → calcul, API, BDD. |
+| **Resources** | Données en lecture (statiques ou dynamiques). | `@mcp.resource("data://config")` → config, fichiers. |
+| **Prompts** | Templates de messages paramétrés pour le LLM. | `@mcp.prompt` → « Explique le concept X ». |
+
+### 3.3 Filtrage par tags
+
+Permet d’exposer ou masquer des composants selon des tags.
+
+```python
+@mcp.tool(tags={"public", "utility"})
+def public_tool() -> str:
+    return "Public"
+
+@mcp.tool(tags={"internal", "admin"})
+def admin_tool() -> str:
+    return "Admin only"
+
+# N’exposer que les composants avec le tag "public"
+mcp.enable(tags={"public"}, only=True)
+
+# Ou masquer les composants "internal" / "deprecated"
+mcp.disable(tags={"internal", "deprecated"})
+```
+
+### 3.4 Routes personnalisées (HTTP)
+
+Pour des endpoints web en plus du MCP (ex. health check) :
+
+```python
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> PlainTextResponse:
+    return PlainTextResponse("OK")
+```
+
+Avec `transport="http"`, le health check est disponible à `http://localhost:8000/health`, le MCP à `http://localhost:8000/mcp`.
+
+---
+
+## 4. Tools (outils)
+
+### 4.1 Décorateur `@mcp.tool`
+
+Une fonction Python décorée devient un tool MCP : nom, description (docstring), schéma d’entrée (paramètres typés) et validation sont dérivés automatiquement.
+
+```python
+@mcp.tool
+def add(a: int, b: int) -> int:
+    """Additionne deux entiers."""
+    return a + b
+```
+
+- Pas de `*args` / `**kwargs` : FastMCP a besoin d’un schéma complet.
+
+### 4.2 Arguments du décorateur
+
+```python
+@mcp.tool(
+    name="find_products",
+    description="Recherche dans le catalogue avec filtre optionnel.",
+    tags={"catalog", "search"},
+    meta={"version": "1.2"},
+    timeout=30,
+)
+def search_products(query: str, category: str | None = None) -> list[dict]:
+    ...
+```
+
+- **name** : nom exposé au client (défaut : nom de la fonction).
+- **description** : remplace la docstring pour le protocole.
+- **tags**, **meta** : catégorisation et métadonnées.
+- **timeout** : durée max d’exécution (secondes).
+
+### 4.3 Types et validation
+
+Types supportés (alignés Pydantic) : `int`, `float`, `str`, `bool`, `bytes`, `datetime`, `date`, `timedelta`, `list[T]`, `dict[K,V]`, `Literal[...]`, `Enum`, `Path`, `UUID`, modèles Pydantic.
+
+- Paramètres **sans valeur par défaut** = requis.
+- **Strict mode** : `FastMCP(..., strict_input_validation=True)` refuse la coercition (ex. `"10"` pour un `int`).
+
+Descriptions et contraintes avec `Field` :
+
+```python
+from typing import Annotated
+from pydantic import Field
+
+@mcp.tool
+def process_image(
+    image_url: Annotated[str, Field(description="URL de l’image")],
+    width: Annotated[int, Field(ge=1, le=2000)] = 800,
+) -> dict:
+    ...
+```
+
+### 4.4 Sync / async
+
+- **Sync** (`def`) : exécuté dans un threadpool pour ne pas bloquer l’event loop.
+- **Async** (`async def`) : préférable pour I/O (réseau, BDD).
+
+### 4.5 Méthodes (classes)
+
+Pour enregistrer une méthode d’instance (sans exposer `self`) :
+
+```python
+from fastmcp.tools import tool
+
+class Calculator:
+    def __init__(self, multiplier: int):
+        self.multiplier = multiplier
+
+    @tool()
+    def multiply(self, x: int) -> int:
+        """Multiplie x par le multiplicateur de l’instance."""
+        return x * self.multiplier
+
+calc = Calculator(multiplier=3)
+mcp = FastMCP()
+mcp.add_tool(calc.multiply)
+```
+
+---
+
+## 5. Resources et templates
+
+### 5.1 Resource simple
+
+Les resources exposent des données en lecture. Le client demande une URI ; le serveur exécute la fonction et renvoie le contenu.
+
+```python
+import json
+from fastmcp import FastMCP
+
+mcp = FastMCP(name="DataServer")
+
+@mcp.resource("resource://greeting")
+def get_greeting() -> str:
+    """Message de bienvenue."""
+    return "Hello from FastMCP!"
+
+@mcp.resource("data://config")
+def get_config() -> str:
+    """Configuration au format JSON."""
+    return json.dumps({"theme": "dark", "version": "1.0"})
+```
+
+Types de retour : **str** (texte), **bytes** (binaire, ex. image), ou **ResourceResult** pour plusieurs contenus / MIME / métadonnées.
+
+### 5.2 Resource templates (paramétrées)
+
+L’URI contient des placeholders ; le client fournit les valeurs.
+
+```python
+@mcp.resource("users://{user_id}/profile")
+def get_user_profile(user_id: int) -> dict:
+    """Profil utilisateur par ID."""
+    return {"id": user_id, "name": f"User {user_id}", "status": "active"}
+```
+
+Pour renvoyer du JSON, sérialiser en string (`json.dumps(...)`) ou utiliser `ResourceResult` avec `mime_type="application/json"`.
+
+### 5.3 ResourceResult et ResourceContent
+
+```python
+from fastmcp.resources import ResourceResult, ResourceContent
+
+@mcp.resource("data://report")
+def get_report() -> ResourceResult:
+    return ResourceResult(
+        contents=[
+            ResourceContent(content='[{"id": 1}]', mime_type="application/json"),
+            ResourceContent(content="# Report\n...", mime_type="text/markdown"),
+        ],
+        meta={"total": 1},
+    )
+```
+
+### 5.4 Ressources statiques (fichiers, texte)
+
+```python
+from pathlib import Path
+from fastmcp.resources import FileResource, TextResource
+
+readme = FileResource(
+    uri="file:///path/to/README.md",
+    path=Path("./README.md"),
+    name="README",
+    description="Documentation du projet",
+    mime_type="text/markdown",
+)
+mcp.add_resource(readme)
+
+notice = TextResource(
+    uri="resource://notice",
+    name="Avis",
+    text="Maintenance prévue dimanche.",
+)
+mcp.add_resource(notice)
+```
+
+---
+
+## 6. Prompts
+
+### 6.1 Définition
+
+Les **prompts** sont des templates de messages (souvent pour l’utilisateur) que le client peut récupérer avec des arguments. Le LLM les utilise pour cadrer la conversation.
+
+```python
+from fastmcp import FastMCP
+
+mcp = FastMCP(name="PromptServer")
+
+@mcp.prompt
+def ask_about_topic(topic: str) -> str:
+    """Demande une explication sur un sujet."""
+    return f"Peux-tu m’expliquer le concept de « {topic} » ?"
+```
+
+### 6.2 Types de retour
+
+- **str** : un seul message utilisateur.
+- **list[Message | str]** : conversation (rôle explicite avec `Message(..., role="assistant")`).
+- **PromptResult** : messages + description + meta.
+
+```python
+from fastmcp.prompts import Message, PromptResult
+
+@mcp.prompt
+def code_review(code: str) -> PromptResult:
+    return PromptResult(
+        messages=[
+            Message(f"Revois ce code :\n\n```\n{code}\n```"),
+            Message("Je vais analyser le code.", role="assistant"),
+        ],
+        description="Prompt de revue de code",
+        meta={"review_type": "security"},
+    )
+```
+
+### 6.3 Paramètres requis / optionnels
+
+Comme pour les tools : pas de défaut = requis ; défaut présent = optionnel.
+
+---
+
+## 7. Contexte MCP et injection de dépendances
+
+### 7.1 Objet Context
+
+Dans un tool, une resource ou un prompt, on peut accéder au **Context** pour :
+- **Logging** : `await ctx.info(...)`, `ctx.debug`, `ctx.warning`, `ctx.error`
+- **Progress** : `await ctx.report_progress(progress=50, total=100)`
+- **Ressources** : `await ctx.list_resources()`, `await ctx.read_resource(uri)`
+- **Prompts** : `await ctx.list_prompts()`, `await ctx.get_prompt(name, arguments)`
+- **État de session** : `await ctx.set_state(key, value)`, `await ctx.get_state(key)`
+- **Elicitation** : demander une entrée structurée à l’utilisateur
+- **Sampling** : demander au client de faire générer du texte par le LLM
+- **Métadonnées requête** : `ctx.request_id`, `ctx.client_id`, `ctx.session_id`, `ctx.request_context.meta`
+
+Injection par type :
+
+```python
+from fastmcp import FastMCP, Context
+
+@mcp.tool
+async def process_file(file_uri: str, ctx: Context) -> str:
+    await ctx.info(f"Traitement de {file_uri}")
+    return "Done"
+```
+
+Ou avec `CurrentContext()` :
+
+```python
+from fastmcp.dependencies import CurrentContext
+
+@mcp.tool
+async def process_file(file_uri: str, ctx: Context = CurrentContext()) -> str:
+    await ctx.info(f"Traitement de {file_uri}")
+    return "Done"
+```
+
+En dehors des paramètres (dans un sous-appel), utiliser `get_context()` (côté serveur, dans une requête).
+
+### 7.2 Injection de dépendances (built-in)
+
+- **Context** : `Context` ou `CurrentContext()`
+- **Serveur** : `CurrentFastMCP()`
+- **Requête HTTP** : `CurrentRequest()` (Starlette)
+- **En-têtes HTTP** : `CurrentHeaders()` (retourne un dict, safe sans HTTP)
+- **Token d’accès** : `CurrentAccessToken()` (auth), `TokenClaim("sub")` pour un claim
+- **Tasks** : `Progress()`, `CurrentDocket()`, `CurrentWorker()` (avec `fastmcp[tasks]`)
+
+Les paramètres injectés sont **exclus du schéma MCP** : le client ne les voit pas.
+
+### 7.3 Dépendances personnalisées
+
+```python
+from fastmcp.dependencies import Depends
+
+def get_config() -> dict:
+    return {"api_url": "https://api.example.com"}
+
+@mcp.tool
+async def fetch_data(query: str, config: dict = Depends(get_config)) -> str:
+    return f"Fetching from {config['api_url']} for {query}"
+```
+
+Gestion de ressources (cleanup) avec context manager async :
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def get_database():
+    db = await connect_to_database()
+    try:
+        yield db
+    finally:
+        await db.close()
+
+@mcp.tool
+async def query_users(sql: str, db=Depends(get_database)) -> list:
+    return await db.execute(sql)
+```
+
+---
+
+## 8. Authentification
+
+L’auth s’applique aux transports **HTTP** (pas STDIO, qui hérite de la sécurité du processus local).
+
+### 8.1 Responsabilités
+
+- **Token verification** : le serveur valide des tokens émis ailleurs (JWT, etc.).
+- **Remote OAuth** : intégration à des IdP externes (Descope, WorkOS AuthKit, etc.) avec **Dynamic Client Registration (DCR)**.
+- **OAuth Proxy** : pont vers des IdP sans DCR (GitHub, Google, Azure, etc.) : le proxy présente une interface DCR aux clients MCP.
+- **Full OAuth** : serveur OAuth complet (complexe, à réserver à des cas très spécifiques).
+
+### 8.2 TokenVerifier (JWT)
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+auth = JWTVerifier(
+    jwks_uri="https://your-auth.com/.well-known/jwks.json",
+    issuer="https://your-auth.com",
+    audience="your-mcp-server",
+)
+mcp = FastMCP(name="Protected Server", auth=auth)
+```
+
+### 8.3 OAuth Proxy (ex. GitHub)
+
+```python
+from fastmcp.server.auth.providers.github import GitHubProvider
+
+auth = GitHubProvider(
+    client_id=os.environ.get("GITHUB_CLIENT_ID"),
+    client_secret=os.environ.get("GITHUB_CLIENT_SECRET"),
+    base_url=os.environ.get("BASE_URL", "http://localhost:8000"),
+)
+mcp = FastMCP(name="GitHub-Protected Server", auth=auth)
+```
+
+### 8.4 MultiAuth (plusieurs sources)
+
+Accepter à la fois un proxy OAuth et des JWT internes :
+
+```python
+from fastmcp.server.auth import MultiAuth, OAuthProxy
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+auth = MultiAuth(
+    server=OAuthProxy(...),
+    verifiers=[
+        JWTVerifier(jwks_uri="...", issuer="...", audience="..."),
+    ],
+)
+mcp = FastMCP("My Server", auth=auth)
+```
+
+---
+
+## 9. Middleware
+
+Le middleware intercepte les requêtes/réponses pour ajouter comportement transversal (logging, timing, rate limiting, erreurs, etc.).
+
+Documentation détaillée : [Middleware](https://gofastmcp.com/servers/middleware). FastMCP fournit des middlewares pour :
+- **Logging** : journalisation des requêtes
+- **Error handling** : gestion centralisée des erreurs
+- **Timing** : mesure des durées
+- **Rate limiting** : limitation du débit
+- **Caching**, **Ping**, **Authorization**, **Tool injection**, etc.
+
+Les middlewares s’enchaînent ; chaque couche peut appeler la suivante et modifier la requête ou la réponse.
+
+---
+
+## 10. Providers et composition
+
+### 10.1 Notion de provider
+
+Un **provider** est une source de composants (tools, resources, prompts). Le serveur agrège plusieurs providers. Les décorateurs `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` enregistrent dans le **LocalProvider** par défaut.
+
+### 10.2 Composition avec `mount()`
+
+Combiner plusieurs serveurs en un :
+
+```python
+weather = FastMCP("Weather")
+@weather.tool
+def get_forecast(city: str) -> str:
+    return f"Sunny in {city}"
+
+main = FastMCP("MainApp")
+main.mount(weather)
+# main expose get_forecast
+```
+
+### 10.3 Namespace
+
+Éviter les conflits de noms entre serveurs montés :
+
+```python
+main.mount(weather, namespace="weather")
+main.mount(calendar, namespace="calendar")
+# Tools : weather_get_forecast, calendar_get_events
+# Resources : data://weather/..., data://calendar/...
+```
+
+### 10.4 Monter des serveurs externes (proxy)
+
+```python
+from fastmcp.server import create_proxy
+
+mcp = FastMCP("Orchestrator")
+mcp.mount(create_proxy("http://api.example.com/mcp"), namespace="api")
+mcp.mount(create_proxy("./my_server.py"), namespace="local")
+```
+
+Pour npm/uvx : passer une config `mcpServers` ou utiliser `NpxStdioTransport` / `UvxStdioTransport`.
+
+### 10.5 Ordre des providers
+
+Le **LocalProvider** est interrogé en premier. En cas de doublon de nom, le premier fournisseur qui déclare le composant l’emporte (ou le dernier monté selon la doc – à vérifier selon la version).
+
+---
+
+## 11. Transforms
+
+Les **transforms** modifient les composants entre les providers et le client (renommage, filtre, recherche à la demande, etc.).
+
+### 11.1 Transforms intégrés
+
+- **Namespace** : préfixe sur les noms (souvent utilisé avec `mount(..., namespace="x")`).
+- **ToolTransform** : renommer, changer description/arguments des tools.
+- **Tool Search** : remplacer une grosse liste d’outils par un outil de recherche.
+- **Resources as Tools** / **Prompts as Tools** : exposer resources/prompts à des clients qui ne supportent que les tools.
+- **Code Mode** (expérimental) : remplacer de nombreux tools par un outil `search` + `execute` en sandbox.
+
+### 11.2 Niveau provider vs serveur
+
+- **Provider** : transform appliqué aux composants d’un provider donné.
+- **Serveur** : `FastMCP(..., transforms=[...])` applique à tous les composants.
+
+L’ordre d’ajout définit la chaîne (le premier ajouté est le plus proche du provider).
+
+### 11.3 Transform personnalisé
+
+En sous-classant `Transform` et en surchargeant par exemple `list_tools` / `get_tool` (et équivalents pour resources/prompts), on peut filtrer, renommer ou enrichir les composants.
+
+---
+
+## 12. Lifespan, progress, logging
+
+### 12.1 Lifespan
+
+Permet du setup/teardown au démarrage/arrêt du serveur (connexions BDD, caches, etc.). Configurable au constructeur de `FastMCP` ou via des hooks de lifespan.
+
+### 12.2 Progress
+
+Dans un tool (ou resource/prompt) long, utiliser le **Context** pour notifier le client :
+
+```python
+await ctx.report_progress(progress=50, total=100)
+```
+
+Ou avec les **Background tasks** (section 13), utiliser la dépendance **Progress** :
+
+```python
+await progress.set_total(100)
+await progress.increment()
+await progress.set_message("Processing chunk 3")
+```
+
+### 12.3 Logging côté client
+
+Envoyer des logs au client via le Context :
+
+```python
+await ctx.debug("Début du traitement")
+await ctx.info(f"Fichier : {path}")
+await ctx.warning("Paramètre déprécié")
+await ctx.error("Échec de la requête externe")
+```
+
+---
+
+## 13. Background tasks
+
+Avec `fastmcp[tasks]`, un tool (ou resource/prompt) peut s’exécuter en **tâche de fond** : le client reçoit immédiatement un **task ID** et peut interroger le statut ou récupérer le résultat plus tard.
+
+### 13.1 Activer les tasks
+
+```bash
+pip install "fastmcp[tasks]"
+```
+
+```python
+@mcp.tool(task=True)
+async def slow_computation(duration: int) -> str:
+    """Opération longue."""
+    for i in range(duration):
+        await asyncio.sleep(1)
+    return f"Terminé en {duration} s"
+```
+
+Seules les fonctions **async** peuvent être `task=True`.
+
+### 13.2 Modes d’exécution (TaskConfig)
+
+- **optional** (défaut avec `task=True`) : le client peut appeler en synchrone ou en tâche.
+- **required** : le client doit demander l’exécution en tâche.
+- **forbidden** : pas d’exécution en tâche.
+
+```python
+from fastmcp.server.tasks import TaskConfig
+
+@mcp.tool(task=TaskConfig(mode="required"))
+async def must_be_background() -> str:
+    return "Only background"
+```
+
+### 13.3 Backends
+
+- **memory://** (défaut) : en mémoire, pas de persistance, un seul processus.
+- **redis://** : Redis (ou Valkey) pour persistance et workers multiples.
+
+Variable d’environnement : `FASTMCP_DOCKET_URL=redis://localhost:6379`.
+
+### 13.4 Workers
+
+Un worker embarqué démarre avec le serveur. Pour scaler :
+
+```bash
+fastmcp tasks worker server.py
+```
+
+---
+
+## 14. Client FastMCP
+
+Le **Client** FastMCP permet d’appeler un serveur MCP depuis du code Python (tests, scripts, orchestration).
+
+### 14.1 Création et connexion
+
+```python
+import asyncio
+from fastmcp import Client, FastMCP
+
+# Serveur in-memory (tests)
+server = FastMCP("TestServer")
+client = Client(server)
+
+# Serveur HTTP
+client = Client("https://example.com/mcp")
+
+# Fichier Python local (STDIO)
+client = Client("my_server.py")
+
+async def main():
+    async with client:
+        await client.ping()
+        tools = await client.list_tools()
+        result = await client.call_tool("greet", {"name": "World"})
+        print(result)
+
+asyncio.run(main())
+```
+
+Toutes les opérations nécessitent d’être dans un `async with client:` pour le cycle de vie (connexion, initialisation MCP).
+
+### 14.2 Opérations
+
+- **Tools** : `list_tools()`, `call_tool(name, arguments)`
+- **Resources** : `list_resources()`, `read_resource(uri)`
+- **Prompts** : `list_prompts()`, `get_prompt(name, arguments)`
+
+### 14.3 Handlers (callbacks)
+
+Le client peut enregistrer des handlers pour :
+- **Logging** : messages envoyés par le serveur
+- **Progress** : mises à jour de progression
+- **Sampling** : requêtes du serveur pour faire générer du texte par le LLM
+- **Elicitation** : demandes d’entrée utilisateur
+
+Voir la doc [Clients](https://gofastmcp.com/clients/client) pour les signatures et options de transport (auth, timeouts, etc.).
+
+---
+
+## 15. Déploiement
+
+### 15.1 Transports
+
+- **STDIO** (défaut) : stdin/stdout, un processus par session (Claude Desktop, CLI).
+- **HTTP (Streamable)** : recommandé pour le réseau, multi-clients, déploiement distant.
+- **SSE** : legacy, à éviter pour les nouveaux projets.
+
+### 15.2 Lancer le serveur
+
+Dans le script :
+
+```python
+if __name__ == "__main__":
+    mcp.run()                                    # STDIO
+    mcp.run(transport="http", host="0.0.0.0", port=8000)  # HTTP
+```
+
+Ou via la CLI : `fastmcp run server.py`, `fastmcp run server.py --transport http --port 8000`.
+
+### 15.3 ASGI (production)
+
+Pour Uvicorn / Gunicorn / Hypercorn :
+
+```python
+app = mcp.http_app()
+# Puis : uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Endpoint MCP par défaut : `/mcp`. Chemin personnalisable : `mcp.http_app(path="/api/mcp/")`.
+
+### 15.4 Auth et health check
+
+- **Auth** : configurer un provider (JWT, OAuth Proxy, etc.) et le passer à `FastMCP(auth=...)`. Recommandé pour les serveurs HTTP exposés.
+- **Health check** : `@mcp.custom_route("/health", methods=["GET"])` pour renvoyer un statut (ex. `"OK"` ou JSON `{"status": "healthy"}`).
+
+### 15.5 Intégration à FastAPI / Starlette
+
+On peut monter l’app ASGI FastMCP dans une app FastAPI/Starlette existante pour exposer MCP sur un préfixe (ex. `/mcp`) tout en gardant le reste des routes.
+
+---
+
+## 16. CLI fastmcp
+
+La CLI `fastmcp` permet d’exécuter, inspecter et installer des serveurs sans écrire de code client.
+
+### 16.1 Commandes principales
+
+| Commande | Rôle |
+|----------|------|
+| `fastmcp run <spec>` | Lancer un serveur (fichier, URL, config). |
+| `fastmcp list <spec>` | Lister les tools (et optionnellement resources, prompts). |
+| `fastmcp call <spec> <tool> [args]` | Appeler un tool. |
+| `fastmcp inspect <spec>` | Afficher les composants (résumé ou JSON). |
+| `fastmcp install` | Installer un serveur dans Claude, Cursor, Gemini CLI, etc. |
+| `fastmcp discover` | Découvrir les serveurs configurés dans les éditeurs. |
+| `fastmcp version` | Afficher la version. |
+
+### 16.2 Cible (server spec)
+
+- **URL** : `fastmcp list http://localhost:8000/mcp`
+- **Fichier Python** : `fastmcp list server.py` (instance `mcp`, `server` ou `app`)
+- **Instance nommée** : `fastmcp run server.py:my_custom_server`
+- **Config** : `fastmcp run fastmcp.json` ou fichier avec `mcpServers`
+- **Nom connu** : `fastmcp list weather` (si config Cursor/Claude/Gemini présente)
+
+### 16.3 Auth en CLI
+
+Pour une URL protégée : par défaut la CLI peut déclencher le flux OAuth. Pour ignorer : `--auth none`. Pour un token : `--auth "Bearer sk-..."`.
+
+### 16.4 Reload (développement)
+
+```bash
+fastmcp run server.py --reload
+```
+
+---
+
+## 17. Apps (UI dans la conversation)
+
+Les **MCP Apps** permettent à un tool de renvoyer une **UI interactive** (HTML ou Prefab) affichée dans une iframe côté client (extension MCP Apps).
+
+### 17.1 Prefab Apps (recommandé pour du déclaratif)
+
+Avec `fastmcp[apps]` et [Prefab UI](https://prefab.prefect.io), on décrit l’UI en Python (colonnes, graphiques, tableaux, formulaires) et on renvoie un `PrefabApp` :
+
+```python
+from prefab_ui.components import Column, Heading, BarChart, ChartSeries
+from prefab_ui.app import PrefabApp
+
+@mcp.tool(app=True)
+def sales_chart(year: int) -> PrefabApp:
+    data = get_sales_data(year)
+    with Column(gap=4, css_class="p-6") as view:
+        Heading(f"{year} Sales")
+        BarChart(data=data, series=[...], x_axis="month")
+    return PrefabApp(view=view)
+```
+
+### 17.2 Custom HTML Apps
+
+Pour un contrôle total : définir une resource avec du HTML/CSS/JS et l’associer au tool via `AppConfig(resource_uri="ui://my-app/view.html")`. Le client charge l’URI dans l’iframe et communique avec l’hôte via le SDK `@modelcontextprotocol/ext-apps`.
+
+---
+
+## 18. Exemples récapitulatifs
+
+### 18.1 Serveur minimal (tool + resource + prompt)
+
+```python
+from fastmcp import FastMCP
+import json
+
+mcp = FastMCP("Demo", instructions="Serveur de démo avec un outil, une ressource et un prompt.")
+
+@mcp.tool
+def add(a: int, b: int) -> int:
+    """Additionne deux entiers."""
+    return a + b
+
+@mcp.resource("data://config")
+def config() -> str:
+    return json.dumps({"app": "demo", "version": "1.0"})
+
+@mcp.prompt
+def explain(topic: str) -> str:
+    """Demande une explication sur un sujet."""
+    return f"Explique-moi : {topic}"
+
+if __name__ == "__main__":
+    mcp.run(transport="http", port=8000)
+```
+
+### 18.2 Client minimal
+
+```python
+import asyncio
+from fastmcp import Client
+
+async def main():
+    client = Client("http://localhost:8000/mcp")
+    async with client:
+        r = await client.call_tool("add", {"a": 2, "b": 3})
+        print(r)
+        content = await client.read_resource("data://config")
+        print(content[0].text)
+
+asyncio.run(main())
+```
+
+### 18.3 Composition avec namespace
+
+```python
+from fastmcp import FastMCP
+
+weather = FastMCP("Weather")
+@weather.tool
+def forecast(city: str) -> str:
+    return f"Weather in {city}"
+
+main = FastMCP("App")
+main.mount(weather, namespace="weather")
+# Tool exposé : weather_forecast
+```
+
+---
+
+## 19. Exercices
+
+### Exercice 1 : Premier serveur
+
+Crée un fichier `exercice_1.py` avec un serveur FastMCP qui expose un seul tool `double(x: int) -> int` renvoyant `2 * x`. Lance-le en HTTP sur le port 9000 et appelle le tool avec la CLI (`fastmcp call ...`).
+
+### Exercice 2 : Resource et template
+
+Ajoute au même serveur :
+- Une resource statique `data://info` qui renvoie un JSON `{"name": "MonServeur", "version": "1.0"}`.
+- Une resource template `users://{user_id}/name` qui renvoie `{"user_id": <id>, "name": "User_<id>"}`.
+
+Teste avec le client Python (`read_resource` pour les deux URIs en remplaçant `{user_id}` par un entier).
+
+### Exercice 3 : Prompt et Context
+
+Définis un prompt `summarize(title: str, length: str = "short")` qui renvoie la chaîne :  
+`"Résume le texte suivant en une version {length} : « {title} »."`  
+Puis dans un tool `require_summary(title: str, ctx: Context)`, utilise `ctx.get_prompt("summarize", {"title": title, "length": "short"})` et renvoie le premier message du résultat (ou son contenu texte).
+
+### Exercice 4 : Tags et visibilité
+
+Définis trois tools : `public_tool`, `internal_tool`, `admin_tool` avec les tags `{"public"}`, `{"internal"}`, `{"admin"}`. Configure le serveur pour n’exposer que les tools avec le tag `public`. Vérifie avec `fastmcp list` que seuls les tools publics apparaissent.
+
+### Exercice 5 : Dépendance personnalisée
+
+Crée une dépendance `get_api_url() -> str` qui renvoie `os.environ.get("API_URL", "https://api.example.com")`. Injecte-la dans un tool `call_external(endpoint: str, api_url: str = Depends(get_api_url))` qui renvoie une chaîne du type `"Appel à {api_url}/{endpoint}"`. Vérifie que le schéma du tool ne contient pas `api_url` (paramètre injecté, invisible pour le client).
+
+### Exercice 6 : Composition
+
+Crée deux serveurs : `math` (tools `add`, `multiply`) et `text` (tool `uppercase(s: str) -> str`). Monte-les dans un serveur `main` avec les namespaces `math` et `text`. Écris un court script client qui appelle `math_add`, `math_multiply` et `text_uppercase` via le serveur `main`.
+
+### Exercice 7 : Background task (optionnel)
+
+Avec `fastmcp[tasks]`, définis un tool async `long_task(seconds: int)` qui fait `await asyncio.sleep(seconds)` et renvoie `f"Done after {seconds}s"`. Déclare-le avec `task=True`. Documente comment un client pourrait l’appeler en mode tâche (start task, poll, get result) en t’appuyant sur la doc FastMCP / MCP.
+
+### Exercice 8 : Route personnalisée et health
+
+Sur un serveur HTTP, ajoute une route GET `/health` qui renvoie `{"status": "ok", "service": "mcp"}`. Vérifie avec `curl http://localhost:8000/health` (ou équivalent).
+
+---
+
+## 20. Corrigé des exercices
+
+<details>
+<summary>Cliquer pour afficher le corrigé</summary>
+
+### Ex. 1 – Premier serveur
+
+```python
+# exercice_1.py
+from fastmcp import FastMCP
+
+mcp = FastMCP("Exercice1")
+
+@mcp.tool
+def double(x: int) -> int:
+    """Retourne le double de x."""
+    return 2 * x
+
+if __name__ == "__main__":
+    mcp.run(transport="http", port=9000)
+```
+
+Lancement : `python exercice_1.py`.  
+CLI : `fastmcp call http://localhost:9000/mcp double x=5` (ou selon la syntaxe de la CLI pour les args).
+
+### Ex. 2 – Resource et template
+
+```python
+@mcp.resource("data://info")
+def get_info() -> str:
+    return json.dumps({"name": "MonServeur", "version": "1.0"})
+
+@mcp.resource("users://{user_id}/name")
+def get_user_name(user_id: int) -> str:
+    return json.dumps({"user_id": user_id, "name": f"User_{user_id}"})
+```
+
+Client : `await client.read_resource("data://info")` et `await client.read_resource("users://42/name")` (ou équivalent avec template selon le client).
+
+### Ex. 3 – Prompt et Context
+
+```python
+@mcp.prompt
+def summarize(title: str, length: str = "short") -> str:
+    return f"Résume le texte suivant en une version {length} : « {title} »."
+
+@mcp.tool
+async def require_summary(title: str, ctx: Context) -> str:
+    result = await ctx.get_prompt("summarize", {"title": title, "length": "short"})
+    return result.messages[0].content if result.messages else ""
+```
+
+### Ex. 4 – Tags
+
+```python
+@mcp.tool(tags={"public"})
+def public_tool() -> str:
+    return "public"
+
+@mcp.tool(tags={"internal"})
+def internal_tool() -> str:
+    return "internal"
+
+@mcp.tool(tags={"admin"})
+def admin_tool() -> str:
+    return "admin"
+
+mcp.enable(tags={"public"}, only=True)
+```
+
+### Ex. 5 – Dépendance
+
+```python
+import os
+from fastmcp.dependencies import Depends
+
+def get_api_url() -> str:
+    return os.environ.get("API_URL", "https://api.example.com")
+
+@mcp.tool
+def call_external(endpoint: str, api_url: str = Depends(get_api_url)) -> str:
+    return f"Would call {api_url}/{endpoint}"
+```
+
+Le paramètre `api_url` n’apparaît pas dans le schéma MCP (injection).
+
+### Ex. 6 – Composition
+
+```python
+math_srv = FastMCP("Math")
+@math_srv.tool
+def add(a: int, b: int) -> int:
+    return a + b
+@math_srv.tool
+def multiply(a: int, b: int) -> int:
+    return a * b
+
+text_srv = FastMCP("Text")
+@text_srv.tool
+def uppercase(s: str) -> str:
+    return s.upper()
+
+main = FastMCP("Main")
+main.mount(math_srv, namespace="math")
+main.mount(text_srv, namespace="text")
+
+# Client : call_tool("math_add", {...}), call_tool("text_uppercase", {"s": "hi"})
+```
+
+### Ex. 7 – Background task
+
+Tool : `@mcp.tool(task=True)` + `async def long_task(seconds: int) -> str`.  
+Le client utilise les requêtes MCP de tâches (tasks/start, tasks/get, etc.) selon le protocole MCP (SEP-1686). Voir la doc FastMCP “Background Tasks” et “Client” pour les appels exacts.
+
+### Ex. 8 – Health
+
+```python
+from starlette.responses import JSONResponse
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    return JSONResponse({"status": "ok", "service": "mcp"})
+```
+
+</details>
+
+---
+
+## Ressources
+
+- **Documentation FastMCP** : [https://gofastmcp.com/](https://gofastmcp.com/)
+- **Index complet (LLM)** : [https://gofastmcp.com/llms.txt](https://gofastmcp.com/llms.txt)
+- **Model Context Protocol** : [https://modelcontextprotocol.io/](https://modelcontextprotocol.io/)
+- **Prefect Horizon** (hébergement MCP) : [https://horizon.prefect.io](https://horizon.prefect.io)
+
+---
+
+**Fin du cours.** En suivant ce programme et en pratiquant les exercices, tu couvres l’ensemble des concepts FastMCP et tu peux sortir opérationnel et “niveau expert” sur la construction et le déploiement de serveurs MCP avec FastMCP.
