@@ -1,0 +1,522 @@
+# Cours complet : Les API REST
+
+**Niveau :** Avancé · **Profil :** Field Expert  
+**Objectif :** Maîtriser les concepts, le design et les bonnes pratiques des API REST.
+
+---
+
+## Table des matières
+
+1. [Introduction : qu'est-ce qu'une API REST ?](#1-introduction)
+2. [Fondements HTTP et Web](#2-fondements-http-et-web)
+3. [Les 6 contraintes REST (Architecture)](#3-les-6-contraintes-rest)
+4. [Ressources, URIs et verbes HTTP](#4-ressources-uris-et-verbes-http)
+5. [Codes de statut et sémantique](#5-codes-de-statut-et-sémantique)
+6. [Format des données : JSON, schémas](#6-format-des-données)
+7. [Versioning et évolution](#7-versioning-et-évolution)
+8. [Pagination, filtres et recherche](#8-pagination-filtres-et-recherche)
+9. [Gestion des erreurs et validation](#9-gestion-des-erreurs-et-validation)
+10. [Sécurité : auth, CORS, rate limiting](#10-sécurité)
+11. [Hypermédia et HATEOAS](#11-hypermédia-et-hateoas)
+12. [Documentation (OpenAPI/Swagger)](#12-documentation)
+13. [Exemples récapitulatifs](#13-exemples-récapitulatifs)
+14. [Exercices](#14-exercices)
+
+---
+
+## 1. Introduction
+
+### 1.1 Définition
+
+**REST** (Representational State Transfer) est un **style d’architecture** pour les systèmes distribués, défini par Roy Fielding. Une **API REST** expose des **ressources** via **HTTP**, identifiées par des **URIs**, manipulées avec les **verbes HTTP** (GET, POST, PUT, PATCH, DELETE) et des **représentations** (souvent JSON).
+
+- **API** : interface pour que des programmes communiquent avec ton service.
+- **REST** : ensemble de règles/contraintes pour que cette interface soit cohérente, scalable et simple à consommer.
+
+### 1.2 Pourquoi REST ?
+
+- Utilise le protocole **HTTP** déjà présent partout (navigateurs, caches, proxies).
+- **Stateless** : chaque requête est autonome, ce qui simplifie la montée en charge.
+- **Langage et client agnostiques** : n’importe quel langage peut appeler l’API.
+- **Standardisé** : verbes et codes HTTP donnent une sémantique claire.
+
+---
+
+## 2. Fondements HTTP et Web
+
+### 2.1 Requête / Réponse
+
+- **Requête** : méthode (verbe) + URI + en-têtes + éventuel corps (body).
+- **Réponse** : code de statut + en-têtes + corps (body).
+
+### 2.2 En-têtes importants
+
+| En-tête | Rôle |
+|--------|------|
+| `Content-Type` | Format du corps (ex. `application/json`) |
+| `Accept` | Format de réponse souhaité |
+| `Authorization` | Token ou credentials |
+| `Cache-Control` | Comportement du cache |
+| `ETag` / `If-None-Match` | Cache conditionnel |
+
+**Exemple (rappel)**  
+Requête : `GET /users/42` avec `Accept: application/json`.  
+Réponse : `200 OK`, `Content-Type: application/json`, corps = `{"id": 42, "name": "Alice"}`.
+
+---
+
+## 3. Les 6 contraintes REST
+
+Pour qu’une API soit qualifiée de « REST », elle doit respecter ces contraintes :
+
+| Contrainte | Idée |
+|------------|------|
+| **Client–Serveur** | Séparation des rôles : client (UI/logique utilisateur), serveur (données/logique métier). |
+| **Stateless** | Le serveur ne garde pas l’état du client entre deux requêtes. Chaque requête contient tout le nécessaire (ex. token). |
+| **Cacheable** | Les réponses doivent indiquer si elles sont cacheables (`Cache-Control`, `ETag`). |
+| **Interface uniforme** | URIs pour les ressources, verbes HTTP standard, représentations (ex. JSON). |
+| **Système en couches** | Le client ne sait pas s’il parle au serveur final ou à un proxy/cache. |
+| **Code à la demande (optionnel)** | Le serveur peut renvoyer du code exécutable (ex. JavaScript). Souvent ignoré en API. |
+
+En pratique, « API REST » désigne souvent une API HTTP qui suit **interface uniforme** + **stateless** + bon usage des **codes HTTP** et du **cache**.
+
+---
+
+## 4. Ressources, URIs et verbes HTTP
+
+### 4.1 Ressources
+
+Une **ressource** est une entité métier (utilisateur, commande, article). Elle a une **URI** unique et une ou plusieurs **représentations** (JSON, XML, etc.).
+
+- **Collection** : `/users`, `/orders`.
+- **Instance** : `/users/42`, `/orders/abc-123`.
+
+### 4.2 Conventions d’URIs
+
+- **Noms** : noms (pluriel) pour les collections. Ex. `/users`, pas `/getUsers`.
+- **Identifiants** : dans le path. Ex. `/users/42`, `/orders/ORD-001`.
+- **Hiérarchie** : refléter les relations. Ex. `/users/42/orders` pour les commandes d’un utilisateur.
+- **Pas de verbes dans l’URI** : le verbe est la méthode HTTP (GET, POST, etc.).
+
+### 4.3 Verbes HTTP et sémantique
+
+| Verbe | Rôle | Idempotent | Corps |
+|-------|------|------------|--------|
+| **GET** | Lire une ressource (ou une collection). | Oui | Non (ignoré) |
+| **POST** | Créer une ressource (souvent dans une collection). | Non | Oui |
+| **PUT** | Remplacer une ressource identifiée par l’URI. | Oui | Oui |
+| **PATCH** | Modification partielle d’une ressource. | Non* | Oui |
+| **DELETE** | Supprimer une ressource. | Oui | Optionnel |
+
+\* PATCH peut être rendu idempotent selon le type de patch (ex. JSON Patch).
+
+**Exemples (rappel)**  
+- `GET /users` → liste des utilisateurs.  
+- `GET /users/42` → utilisateur 42.  
+- `POST /users` avec body `{"name":"Bob"}` → création.  
+- `PUT /users/42` avec body complet → remplacement.  
+- `PATCH /users/42` avec `{"name":"Robert"}` → mise à jour partielle.  
+- `DELETE /users/42` → suppression.
+
+---
+
+## 5. Codes de statut et sémantique
+
+Le **code HTTP** indique le résultat de la requête. À utiliser de façon cohérente.
+
+### 5.1 Succès (2xx)
+
+| Code | Signification |
+|------|----------------|
+| **200 OK** | Succès (GET, PUT, PATCH). Corps = représentation. |
+| **201 Created** | Ressource créée (POST). En-tête `Location` avec URI de la ressource. |
+| **204 No Content** | Succès sans corps (ex. DELETE, ou PUT/PATCH sans retour). |
+
+### 5.2 Redirection (3xx)
+
+| Code | Signification |
+|------|----------------|
+| **301/308** | Ressource déplacée de façon permanente. |
+| **304 Not Modified** | Contenu inchangé (cache, `If-None-Match` / `ETag`). |
+
+### 5.3 Erreur client (4xx)
+
+| Code | Signification |
+|------|----------------|
+| **400 Bad Request** | Requête invalide (syntaxe, validation). |
+| **401 Unauthorized** | Authentification requise ou invalide. |
+| **403 Forbidden** | Authentifié mais pas le droit d’effectuer l’action. |
+| **404 Not Found** | Ressource inexistante. |
+| **409 Conflict** | Conflit (ex. version, règle métier). |
+| **422 Unprocessable Entity** | Sémantique invalide (données métier incorrectes). |
+
+### 5.4 Erreur serveur (5xx)
+
+| Code | Signification |
+|------|----------------|
+| **500 Internal Server Error** | Erreur interne. |
+| **502/503** | Problème de gateway ou service indisponible. |
+
+**Exemple (rappel)**  
+- `POST /users` → succès → `201 Created`, `Location: /users/99`.  
+- `GET /users/999` inexistant → `404 Not Found`.  
+- Token manquant ou expiré → `401 Unauthorized`.
+
+---
+
+## 6. Format des données : JSON, schémas
+
+### 6.1 JSON
+
+C’est le format le plus courant pour le corps des requêtes et réponses.  
+- `Content-Type: application/json`.  
+- Clés en camelCase ou snake_case (à fixer et documenter).
+
+### 6.2 Représentation cohérente
+
+- **Une ressource** : objet JSON avec champs stables (id, attributs, dates).  
+- **Une collection** : souvent un objet avec une clé (ex. `items`, `data`) et éventuellement métadonnées (pagination).
+
+**Exemple (rappel)**  
+Ressource :  
+```json
+{
+  "id": "usr_42",
+  "email": "alice@example.com",
+  "createdAt": "2025-01-15T10:00:00Z"
+}
+```  
+Collection paginée :  
+```json
+{
+  "data": [ { "id": "usr_1", "email": "a@x.com" }, { "id": "usr_2", "email": "b@x.com" } ],
+  "total": 42,
+  "page": 1,
+  "pageSize": 10
+}
+```
+
+### 6.3 Schémas
+
+Définir des **schémas** (ex. JSON Schema, OpenAPI) pour valider les entrées/sorties et générer la doc et les clients.
+
+---
+
+## 7. Versioning et évolution
+
+### 7.1 Pourquoi versionner ?
+
+Éviter de casser les clients existants quand on ajoute ou modifie des champs ou des comportements.
+
+### 7.2 Stratégies courantes
+
+| Stratégie | Exemple | Avantages / inconvénients |
+|-----------|---------|---------------------------|
+| **URI** | `/v1/users`, `/v2/users` | Simple, très visible. Beaucoup de duplications. |
+| **En-tête** | `Accept: application/vnd.api+v1+json` | URIs stables. Moins visible, moins simple à tester. |
+| **Query** | `/users?version=1` | Facile à tester. Souvent évité pour les breaking changes. |
+
+En pratique, **version dans l’URI** (`/v1/`, `/v2/`) est très répandu.
+
+### 7.3 Règles d’évolution
+
+- **Ajout de champs optionnels** : en général pas de nouvelle version.
+- **Champs obligatoires nouveaux, suppression de champs, changement de sémantique** : nouvelle version (v2) et dépréciation de l’ancienne.
+
+**Exemple (rappel)**  
+- Ancien : `GET /v1/users/42` → `{"id": 42, "name": "Alice"}`.  
+- Nouveau : `GET /v2/users/42` → `{"id": "usr_42", "fullName": "Alice", "createdAt": "..."}`.  
+- Garder v1 un temps avec en-tête `Deprecation: true` ou `Sunset`.
+
+---
+
+## 8. Pagination, filtres et recherche
+
+### 8.1 Pagination
+
+Pour les collections volumineuses, ne pas tout renvoyer.
+
+- **Offset / limit** : `GET /users?offset=20&limit=10`. Simple, mais lent sur de gros offsets.
+- **Curseur (cursor)** : `GET /users?cursor=abc123&limit=10`. Meilleur pour de gros volumes et cohérence.
+
+Réponse typique : `data` + `total` (si pertinent) + `nextCursor` / `nextPage`.
+
+### 8.2 Filtres et tri
+
+- Filtres : paramètres de query. Ex. `GET /users?role=admin&status=active`.  
+- Tri : `GET /users?sort=createdAt&order=desc`.  
+- Conventions à documenter (noms des paramètres, valeurs autorisées).
+
+### 8.3 Recherche
+
+- Dédier une ressource ou un chemin : `GET /search?q=alice` ou `GET /users/search?q=alice`.  
+- Pour des besoins complexes : considérer un paramètre `q` avec une syntaxe (ex. opérateurs) documentée.
+
+**Exemple (rappel)**  
+`GET /v1/users?role=admin&page=2&pageSize=10&sort=-createdAt`  
+→ Liste des admins, page 2, 10 par page, tri par date de création décroissante.
+
+---
+
+## 9. Gestion des erreurs et validation
+
+### 9.1 Corps d’erreur structuré
+
+Réponses 4xx/5xx avec un corps JSON homogène, par exemple :
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Les données fournies sont invalides.",
+    "details": [
+      { "field": "email", "reason": "Format invalide" },
+      { "field": "age", "reason": "Doit être positif" }
+    ]
+  }
+}
+```
+
+- **code** : identifiant machine (pour le client).  
+- **message** : message lisible.  
+- **details** : erreurs de validation par champ (optionnel).
+
+### 9.2 Validation
+
+- Valider en entrée (body, query, path) selon les schémas.  
+- Renvoyer **400** pour requête mal formée, **422** pour contraintes métier non respectées (choix à documenter).
+
+**Exemple (rappel)**  
+`POST /users` avec `{"email": "pas-un-email"}` → `422` + body d’erreur avec `field: "email"`.
+
+---
+
+## 10. Sécurité
+
+### 10.1 HTTPS
+
+Toujours exposer l’API en **HTTPS** en production.
+
+### 10.2 Authentification
+
+- **Bearer token** (JWT) : `Authorization: Bearer <token>`. Très courant pour les API.  
+- **API Key** : en en-tête ou en query (moins recommandé en query pour des raisons de logs).  
+- **OAuth 2.0** : pour déléguer l’auth à un fournisseur (login social, SSO).
+
+### 10.3 CORS
+
+Pour les appels depuis un navigateur : configurer **CORS** (origines autorisées, méthodes, en-têtes). Éviter `*` en production si des credentials sont envoyés.
+
+### 10.4 Rate limiting
+
+Limiter le nombre de requêtes par client (par IP, par token) pour éviter les abus.  
+- En-têtes typiques : `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After` en cas de 429.  
+- Code **429 Too Many Requests** quand la limite est dépassée.
+
+**Exemple (rappel)**  
+Requête : `GET /users` avec `Authorization: Bearer eyJhbGc...`.  
+Réponse : `200 OK` + `X-RateLimit-Remaining: 99`.
+
+---
+
+## 11. Hypermédia et HATEOAS
+
+**HATEOAS** (Hypermedia as the Engine of Application State) : les réponses contiennent des **liens** (URI + relation) vers d’autres ressources, pour que le client découvre l’API en suivant les liens plutôt qu’en connaissant toutes les URLs par cœur.
+
+**Exemple (rappel)**  
+`GET /users/42` →  
+```json
+{
+  "id": "usr_42",
+  "name": "Alice",
+  "_links": {
+    "self": { "href": "/users/42" },
+    "orders": { "href": "/users/42/orders" },
+    "avatar": { "href": "/users/42/avatar" }
+  }
+}
+```
+
+En pratique, beaucoup d’API REST « classiques » n’implémentent pas HATEOAS mais restent qualifiées de REST ; c’est une évolution possible pour plus de découvrabilité.
+
+---
+
+## 12. Documentation (OpenAPI/Swagger)
+
+- **OpenAPI (ex-Swagger)** : format standard pour décrire une API (endpoints, paramètres, corps, réponses, auth).  
+- Outils : **Swagger UI** (doc interactive), **Redoc**, génération de clients/serveurs.  
+- Bonne pratique : maintenir le fichier OpenAPI à jour (idéalement comme source de vérité) et l’exposer (ex. `/docs`).
+
+**Exemple (rappel)**  
+Un endpoint documenté en OpenAPI décrit : `GET /users/{id}`, paramètre `id`, réponses 200 (schéma User), 404.
+
+---
+
+## 13. Exemples récapitulatifs
+
+### 13.1 CRUD utilisateur (résumé)
+
+| Action | Méthode | URI | Body (ex.) | Réponse typique |
+|--------|---------|-----|-----------|------------------|
+| Liste | GET | /users | - | 200 + tableau |
+| Détail | GET | /users/42 | - | 200 ou 404 |
+| Création | POST | /users | {"email":"a@b.com","name":"A"} | 201 + Location |
+| Remplacement | PUT | /users/42 | objet complet | 200 ou 404 |
+| Modification partielle | PATCH | /users/42 | {"name":"B"} | 200 ou 404 |
+| Suppression | DELETE | /users/42 | - | 204 ou 404 |
+
+### 13.2 Sous-ressource : commandes d’un utilisateur
+
+- `GET /users/42/orders` → liste des commandes de l’utilisateur 42.  
+- `POST /users/42/orders` → création d’une commande pour l’utilisateur 42 (si le design le prévoit).
+
+---
+
+## 14. Exercices
+
+### Exercice 1 : Conception d’URIs
+
+Pour un système de **bibliothèque** (livres, emprunts, membres), propose des URIs REST pour :
+
+- Lister tous les livres.
+- Obtenir le détail d’un livre par son ID.
+- Lister les emprunts en cours.
+- Obtenir les emprunts d’un membre donné.
+- Créer un nouvel emprunt (livre + membre).
+
+Indique la **méthode HTTP** et l’**URI** pour chaque cas. Vérifie qu’il n’y a pas de verbes dans l’URI.
+
+---
+
+### Exercice 2 : Choix du verbe et du code HTTP
+
+Pour chaque scénario, donne la **méthode HTTP** et le **code de statut** attendus :
+
+1. Création d’une nouvelle commande réussie.  
+2. Récupération du détail d’une commande qui n’existe pas.  
+3. Suppression d’un utilisateur réussie.  
+4. Modification partielle du nom d’un produit (succès).  
+5. Requête de création avec un body JSON invalide (champ manquant).  
+6. Client non authentifié qui appelle un endpoint protégé.
+
+---
+
+### Exercice 3 : Corps de requête et de réponse
+
+1. Écris le **body JSON** d’une requête `POST /products` pour créer un produit avec : `name`, `price`, `categoryId`.  
+2. Écris un **body d’erreur** type pour une réponse **422** avec deux erreurs de validation : champ `email` invalide, champ `age` requis.
+
+---
+
+### Exercice 4 : Pagination et filtres
+
+Tu exposes `GET /orders`. Propose les **paramètres de query** pour :
+
+- Page 3, 20 éléments par page.  
+- Filtre par statut (`pending`, `shipped`, `cancelled`).  
+- Tri par date de création, du plus récent au plus ancien.  
+- Combiner les trois.
+
+Écris l’URL complète pour la combinaison.
+
+---
+
+### Exercice 5 : Versioning
+
+Ton API v1 expose `GET /users/{id}` et renvoie `{ "id": 123, "name": "Alice" }`.  
+En v2, tu veux : `id` en string (ex. `"usr_123"`), champ `fullName` au lieu de `name`, et ajout de `createdAt`.  
+Propose les URIs pour v1 et v2. Quel code de statut utiliser si un client appelle l’ancienne URI v1 alors que tu as déprécié v1 ?
+
+---
+
+### Exercice 6 : Sécurité et en-têtes
+
+1. Comment un client doit-il envoyer un **JWT** dans la requête ? (nom de l’en-tête et format.)  
+2. Après un rate limit (429), comment le serveur peut-il indiquer **quand** réessayer ? (en-tête.)
+
+---
+
+### Exercice 7 : Design complet (synthèse)
+
+Conçois une **mini-spécification** pour une API **« Tâches »** (todo list) :
+
+- Ressources : **tasks** (tâche : titre, description, statut, date d’échéance).  
+- Endpoints : liste, détail, création, mise à jour partielle (ex. statut), suppression.  
+- Pagination sur la liste (paramètres au choix).  
+- Filtre par statut.
+
+Pour chaque endpoint : **méthode**, **URI**, **codes de réponse** attendus, et si besoin un exemple de body (création / PATCH).  
+Tu peux le faire en liste ou en tableau.
+
+---
+
+### Exercice 8 : Bonnes pratiques (QCM mental)
+
+Réponds par vrai/faux ou courte justification :
+
+1. Il est correct d’utiliser `GET /users/delete/42` pour supprimer un utilisateur.  
+2. Pour créer une ressource, on utilise toujours POST avec un body.  
+3. Le code 200 peut être utilisé pour une requête DELETE réussie.  
+4. En REST, le serveur doit stocker la session du client pour savoir qui appelle.  
+5. Le versioning dans l’URI (ex. `/v1/users`) est une pratique courante en production.
+
+---
+
+## Corrigé type (à consulter après avoir essayé)
+
+<details>
+<summary>Cliquer pour afficher le corrigé</summary>
+
+### Ex. 1 – URIs bibliothèque
+- `GET /books`  
+- `GET /books/{id}`  
+- `GET /loans?status=active` ou `GET /loans` avec filtre  
+- `GET /members/{id}/loans`  
+- `POST /loans` avec body `{ "bookId": "...", "memberId": "..." }` (ou `POST /members/{id}/loans` selon le design)
+
+### Ex. 2 – Verbe et code
+1. POST, 201 Created  
+2. GET, 404 Not Found  
+3. DELETE, 204 No Content  
+4. PATCH, 200 OK  
+5. POST, 400 Bad Request ou 422 Unprocessable Entity  
+6. 401 Unauthorized  
+
+### Ex. 3 – Body
+1. `{"name": "Widget", "price": 19.99, "categoryId": "cat_1"}`  
+2. `{"error": {"code": "VALIDATION_ERROR", "message": "...", "details": [{"field": "email", "reason": "..."}, {"field": "age", "reason": "Requis"}]}}`  
+
+### Ex. 4 – Pagination/filtres
+- `page=3`, `pageSize=20` (ou `limit=20&offset=40`)  
+- `status=shipped`  
+- `sort=createdAt&order=desc` (ou `sort=-createdAt`)  
+- `GET /orders?page=3&pageSize=20&status=shipped&sort=-createdAt`  
+
+### Ex. 5 – Versioning
+- v1 : `GET /v1/users/123` ; v2 : `GET /v2/users/123`.  
+- Dépréciation : 200 avec en-tête `Deprecation: true` ou `Sunset: <date>`, ou 301/302 vers v2.  
+
+### Ex. 6 – Sécurité
+1. `Authorization: Bearer <JWT>`.  
+2. En-tête `Retry-After` (secondes ou date HTTP).  
+
+### Ex. 7 – API Tâches
+- `GET /tasks?page=1&pageSize=10&status=done`  
+- `GET /tasks/{id}`  
+- `POST /tasks` body `{ "title", "description", "dueDate" }` → 201  
+- `PATCH /tasks/{id}` body `{ "status": "done" }` → 200  
+- `DELETE /tasks/{id}` → 204  
+- Réponses : 200, 201, 204, 400/422, 404.  
+
+### Ex. 8 – V/F
+1. Faux (verbe dans l’URI ; utiliser DELETE /users/42).  
+2. Vrai en pratique (création = POST + body).  
+3. Possible mais 204 No Content est plus adapté pour DELETE sans body.  
+4. Faux (REST prône stateless).  
+5. Vrai.  
+
+</details>
+
+---
+
+**Fin du cours.** Tu peux t’appuyer sur ce document pour réviser et utiliser les exercices pour valider ta compréhension. Pour aller plus loin : implémenter une petite API (ex. avec Express, FastAPI, Spring) en suivant ces principes.
