@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-professor"
+version = "0.1.0"
+description = "LearnForge MCP — Apprendre avec un professeur IA"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.0.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+mcp-professor = "mcp_professor.server:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_professor*"]
